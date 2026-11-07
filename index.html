@@ -119,22 +119,30 @@ body.idle .panel{opacity:0;pointer-events:none}
   const TOGGLES = [
     ["scan","Scanlines"], ["glow","Glow"], ["curve","Curved glass"], ["mask","Phosphor dots"],
     ["flicker","Flicker and static"], ["chroma","Colour fringe"], ["pixel","Pixelate album art"],
-    ["caps","Capital letters"], ["lite","Lite mode (slow PC)"]
+    ["caps","Capital letters"], ["coverText","Text on cover layout"], ["centerText","Center text (full / cover)"], ["lite","Lite mode (slow PC)"]
   ];
   const LAYOUTS = {
     left:   { name:"Left (art left)" },
     right:  { name:"Right (art right)" },
     center: { name:"Centered" },
     zoom:   { name:"Zoom (art only)" },
-    full:   { name:"Full screen art" }
+    full:   { name:"Full screen art" },
+    sides:  { name:"Cover with side fill" }
   };
-  const defaults = { theme:"green", font:"press", layout:"left", customFont:"", scan:true, glow:true, curve:true, mask:true, flicker:true, chroma:true, pixel:false, caps:true, lite:false };
+  const SIDEFILLS = {
+    tile:    { name:"Tiled copies (zoomed out)" },
+    ambient: { name:"Ambient glow (layered)" },
+    blur:    { name:"Blurred copy" },
+    mirror:  { name:"Mirrored" }
+  };
+  const defaults = { theme:"green", font:"press", layout:"left", customFont:"", sideFill:"tile", tileSize:48, tileGap:0, glowSpread:1.9, glowBlur:3, glowLayers:14, edgeBlend:40, sideDim:65, coverText:true, centerText:false, scan:true, glow:true, curve:true, mask:true, flicker:true, chroma:true, pixel:false, caps:true, lite:false };
   let settings = Object.assign({}, defaults);
   try { Object.assign(settings, JSON.parse(store.get("np_settings") || "{}")); } catch(e){}
   if (!THEMES[settings.theme]) settings.theme = "green";
   if (!FONTS[settings.font]) settings.font = "press";
   if (!LAYOUTS[settings.layout]) settings.layout = "left";
   if (settings.font === "custom" && !settings.customFont) settings.font = "press";
+  if (!SIDEFILLS[settings.sideFill]) settings.sideFill = "tile";
 
   let sceneDirty = true;
 
@@ -154,6 +162,23 @@ body.idle .panel{opacity:0;pointer-events:none}
     mkSelect("Text colour", "theme", THEMES);
     mkSelect("Font", "font", FONTS);
     mkSelect("Layout", "layout", LAYOUTS);
+    mkSelect("Side fill", "sideFill", SIDEFILLS);
+    const mkSlider = (label, key, min, max, step) => {
+      const l = document.createElement("label");
+      const t = document.createElement("span"); t.textContent = label + " " + settings[key];
+      const r = document.createElement("input");
+      r.type = "range"; r.min = min; r.max = max; r.step = step; r.value = settings[key];
+      r.style.cssText = "width:120px;accent-color:#5dff8a";
+      r.addEventListener("input", () => { settings[key] = Number(r.value); t.textContent = label + " " + r.value; saveSettings(); });
+      l.append(t, r); p.append(l);
+    };
+    mkSlider("Tile size", "tileSize", 16, 160, 2);
+    mkSlider("Tile gap", "tileGap", 0, 40, 1);
+    mkSlider("Glow spread", "glowSpread", 1.2, 3, 0.1);
+    mkSlider("Glow blur", "glowBlur", 1, 6, 1);
+    mkSlider("Glow layers", "glowLayers", 3, 30, 1);
+    mkSlider("Side darkness", "sideDim", 0, 90, 5);
+    mkSlider("Edge blend", "edgeBlend", 0, 90, 2);
     const cf = document.createElement("div");
     cf.style.cssText = "padding:8px 0 4px;border-top:1px solid #2fa859;margin-top:6px";
     const hint = document.createElement("div");
@@ -481,6 +506,148 @@ body.idle .panel{opacity:0;pointer-events:none}
     sc.fillText(text, x, y); sc.textAlign = "left";
   }
 
+  const blurA = document.createElement("canvas"); blurA.width = 24; blurA.height = 18;
+  const blurB = document.createElement("canvas"); blurB.width = 96; blurB.height = 72;
+
+  // fills the two side bars next to a full-height square cover
+  // soft (blurred) copies of the cover for the ambient glow, cached per blur level
+  const softCache = new Map(); let softUrl = "";
+  function softArt(r, S){
+    if (softUrl !== artUrl) { softCache.clear(); softUrl = artUrl; }
+    let cur = softCache.get(r);
+    if (cur) return cur;
+    cur = document.createElement("canvas"); cur.width = cur.height = r;
+    const x = cur.getContext("2d");
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.drawImage(artImg, 0, 0, S, S, 0, 0, r, r);
+    while (cur.width < 128) {
+      const n = document.createElement("canvas");
+      n.width = n.height = Math.min(128, cur.width * 2);
+      const nx = n.getContext("2d"); nx.imageSmoothingEnabled = true;
+      nx.drawImage(cur, 0, 0, n.width, n.height);
+      cur = n;
+    }
+    for (let i = 0; i < 2; i++) {
+      const h = document.createElement("canvas"); h.width = h.height = 64;
+      const hx = h.getContext("2d"); hx.imageSmoothingEnabled = true; hx.drawImage(cur, 0, 0, 64, 64);
+      const b = document.createElement("canvas"); b.width = b.height = 128;
+      const bx = b.getContext("2d"); bx.imageSmoothingEnabled = true; bx.drawImage(h, 0, 0, 128, 128);
+      cur = b;
+    }
+    softCache.set(r, cur);
+    return cur;
+  }
+
+  const tileC = document.createElement("canvas"); let tileKey = "";
+  function getTile(T, S){
+    const key = artUrl + "|" + T + "|" + (settings.pixel ? 1 : 0);
+    if (key !== tileKey) {
+      tileC.width = T; tileC.height = T;
+      const c = tileC.getContext("2d");
+      c.imageSmoothingEnabled = !settings.pixel; c.imageSmoothingQuality = "high";
+      if (settings.pixel) {
+        smallCtx.clearRect(0, 0, 64, 64); smallCtx.imageSmoothingEnabled = true;
+        smallCtx.drawImage(artImg, 0, 0, S, S, 0, 0, 64, 64);
+        c.drawImage(small, 0, 0, 64, 64, 0, 0, T, T);
+      } else {
+        c.drawImage(artImg, 0, 0, S, S, 0, 0, T, T);
+      }
+      tileKey = key;
+    }
+    return tileC;
+  }
+
+  function drawSideFill(mode, idle){
+    const L = 80, R = 560;
+    if (!artImg || idle) { drawColorBars(0, 0, W, H); return; }
+    const S = artImg.naturalWidth || artImg.width || 1;
+    sc.imageSmoothingEnabled = true;
+    if (mode === "blur") {
+      const sh = S * 0.75, sy = (S - sh) / 2;
+      const a = blurA.getContext("2d"), b = blurB.getContext("2d");
+      a.imageSmoothingEnabled = true; b.imageSmoothingEnabled = true;
+      a.drawImage(artImg, 0, sy, S, sh, 0, 0, 24, 18);
+      b.drawImage(blurA, 0, 0, 24, 18, 0, 0, 96, 72);
+      sc.drawImage(blurB, 0, 0, 96, 72, 0, 0, W, H);
+    } else if (mode === "tile") {
+      const T = Math.max(8, Math.round(settings.tileSize)), G = Math.max(0, Math.round(settings.tileGap)), P = T + G;
+      const tile = getTile(T, S);
+      sc.fillStyle = THEMES[settings.theme].bg;
+      sc.fillRect(0, 0, L, H); sc.fillRect(R, 0, L, H);
+      sc.save(); sc.beginPath(); sc.rect(0, 0, L, H); sc.rect(R, 0, L, H); sc.clip();
+      const y0 = H / 2 - T / 2;
+      const j0 = -Math.ceil(y0 / P) - 1, j1 = Math.ceil((H - y0) / P) + 1;
+      for (let j = j0; j <= j1; j++) {
+        const y = Math.round(y0 + j * P);
+        for (let k = 0; k * P < L + T; k++) {
+          sc.drawImage(tile, Math.round(L - T - k * P), y);
+          sc.drawImage(tile, Math.round(R + k * P), y);
+        }
+      }
+      sc.restore();
+    } else if (mode === "mirror") {
+      const k = S / 6;
+      sc.save(); sc.translate(L, 0); sc.scale(-1, 1);
+      sc.drawImage(artImg, 0, 0, k, S, 0, 0, L, H); sc.restore();
+      sc.save(); sc.translate(R, 0); sc.scale(-1, 1);
+      sc.drawImage(artImg, S - k, 0, k, S, -L, 0, L, H); sc.restore();
+    } else if (mode === "ambient") {
+      // layers of the cover, each bigger and softer than the last, spreading outward
+      const spread = Math.max(1.2, Math.min(3, Number(settings.glowSpread) || 1.9));
+      const bl = Math.max(1, Math.min(6, Number(settings.glowBlur) || 3));
+      const n = Math.max(3, Math.min(30, Math.round(Number(settings.glowLayers) || 14)));
+      sc.fillStyle = THEMES[settings.theme].bg; sc.fillRect(0, 0, W, H);
+      for (let k = 0; k < n; k++) {
+        const t = k / (n - 1);
+        const size = 480 * (spread + (1.0 - spread) * t);
+        const r = Math.max(4, Math.round(72 / (bl * (1 + 1.2 * (1 - t)))));
+        sc.globalAlpha = k === 0 ? 1 : Math.max(0.12, Math.min(0.55, 3 / n));
+        sc.drawImage(softArt(r, S), W / 2 - size / 2, H / 2 - size / 2, size, size);
+      }
+      sc.globalAlpha = 1;
+    }
+    const d0 = Math.max(0, Math.min(90, Number(settings.sideDim) || 0)) / 100;
+    const d = (mode === "ambient") ? d0 * 0.5 : d0;
+    const near = (mode === "ambient") ? "rgba(0,0,0,0)" : "rgba(0,0,0," + (d * 0.4).toFixed(2) + ")", far = "rgba(0,0,0," + d.toFixed(2) + ")";
+    let g = sc.createLinearGradient(L, 0, 0, 0);
+    g.addColorStop(0, near); g.addColorStop(1, far);
+    sc.fillStyle = g; sc.fillRect(0, 0, L, H);
+    g = sc.createLinearGradient(R, 0, W, 0);
+    g.addColorStop(0, near); g.addColorStop(1, far);
+    sc.fillStyle = g; sc.fillRect(R, 0, L, H);
+  }
+
+  const featherC = document.createElement("canvas"); featherC.width = featherC.height = 480;
+  function drawFeatheredCover(F){
+    const c = featherC.getContext("2d");
+    c.globalCompositeOperation = "source-over";
+    c.clearRect(0, 0, 480, 480);
+    const S = artImg.naturalWidth || artImg.width || 1;
+    if (settings.pixel) {
+      smallCtx.clearRect(0, 0, 64, 64); smallCtx.imageSmoothingEnabled = true;
+      smallCtx.drawImage(artImg, 0, 0, S, S, 0, 0, 64, 64);
+      c.imageSmoothingEnabled = false; c.drawImage(small, 0, 0, 64, 64, 0, 0, 480, 480);
+    } else {
+      c.imageSmoothingEnabled = true; c.drawImage(artImg, 0, 0, S, S, 0, 0, 480, 480);
+    }
+    // fade the left and right edges into whatever is behind
+    c.globalCompositeOperation = "destination-in";
+    const g = c.createLinearGradient(0, 0, 480, 0), f = F / 480;
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(f * 0.25, "rgba(0,0,0,0.16)");
+    g.addColorStop(f * 0.5, "rgba(0,0,0,0.5)");
+    g.addColorStop(f * 0.75, "rgba(0,0,0,0.84)");
+    g.addColorStop(f, "rgba(0,0,0,1)");
+    g.addColorStop(1 - f, "rgba(0,0,0,1)");
+    g.addColorStop(1 - f * 0.75, "rgba(0,0,0,0.84)");
+    g.addColorStop(1 - f * 0.5, "rgba(0,0,0,0.5)");
+    g.addColorStop(1 - f * 0.25, "rgba(0,0,0,0.16)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g; c.fillRect(0, 0, 480, 480);
+    c.globalCompositeOperation = "source-over";
+    sc.drawImage(featherC, 80, 0);
+  }
+
   function drawScene(){
     const th = THEMES[settings.theme], f = FONTS[settings.font], layout = settings.layout;
     const U = (s) => settings.caps ? String(s).toUpperCase() : String(s);
@@ -524,6 +691,32 @@ body.idle .panel{opacity:0;pointer-events:none}
       drawBar(155, 398, 330, 20, frac, th);
       drawTimes(155, 428, 330, false, cur, th, f);
 
+    } else if (layout === "sides") {
+      drawSideFill(settings.sideFill, idle);
+      if (!idle) {
+        const F = Math.max(0, Math.min(90, Number(settings.edgeBlend) || 0));
+        if (F > 0 && artImg) drawFeatheredCover(F); else drawArt(80, 0, 480, 480, false);
+      }
+      if (settings.coverText || idle) {
+        let g = sc.createLinearGradient(0, 230, 0, H);
+        g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(0.5, "rgba(0,0,0,0.6)"); g.addColorStop(1, "rgba(0,0,0,0.92)");
+        sc.fillStyle = g; sc.fillRect(0, 230, W, H - 230);
+        g = sc.createLinearGradient(0, 0, 0, 80);
+        g.addColorStop(0, "rgba(0,0,0,0.55)"); g.addColorStop(1, "rgba(0,0,0,0)");
+        sc.fillStyle = g; sc.fillRect(0, 0, W, 80);
+        sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
+        const ctr = !!settings.centerText;
+        drawHeader(ctr ? 320 : 104, 34, ctr ? "center" : "left", th.fg, f, hdrText);
+        Object.assign(o, { tLines:2, tSizes:[20,16,14,12], aLines:1, aSizes:[12,10], bLines:1, bSizes:[9,8] });
+        textBlock(104, 0, 432, ctr ? "center" : "left", o, th, f, idle, 392);
+        drawBar(104, 408, 432, 20, frac, th);
+        drawTimes(104, 436, 432, ctr, cur, th, f);
+      } else {
+        sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
+        drawBar(104, 440, 432, 16, frac, th);
+      }
+      sc.shadowBlur = 0; sc.shadowColor = "transparent";
+
     } else { // full screen art
       drawArt(0, 0, W, H, idle);
       let g = sc.createLinearGradient(0, 150, 0, H);
@@ -533,11 +726,12 @@ body.idle .panel{opacity:0;pointer-events:none}
       g.addColorStop(0, "rgba(0,0,0,0.55)"); g.addColorStop(1, "rgba(0,0,0,0)");
       sc.fillStyle = g; sc.fillRect(0, 0, W, 90);
       sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
-      drawHeader(44, 36, "left", th.fg, f, hdrText);
+      const ctr = !!settings.centerText;
+      drawHeader(ctr ? 320 : 44, 36, ctr ? "center" : "left", th.fg, f, hdrText);
       Object.assign(o, { tLines:2, tSizes:[22,18,15,12], aLines:1, aSizes:[14,12,10], bLines:1, bSizes:[10,8] });
-      textBlock(44, 0, 552, "left", o, th, f, false, 392);
+      textBlock(44, 0, 552, ctr ? "center" : "left", o, th, f, false, 392);
       drawBar(44, 408, 552, 20, frac, th);
-      drawTimes(44, 436, 552, false, cur, th, f);
+      drawTimes(44, 436, 552, ctr, cur, th, f);
       sc.shadowBlur = 0; sc.shadowColor = "transparent";
     }
   }
