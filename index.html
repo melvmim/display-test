@@ -54,6 +54,12 @@ body.idle .ui{opacity:0;pointer-events:none}
 .panel select{font:inherit;color:#5dff8a;background:#000;border:2px solid #2fa859;padding:3px 6px;max-width:170px}
 .panel .btn{margin-top:10px;font-size:15px}
 body.idle .panel{opacity:0;pointer-events:none}
+.panel details{border-top:1px solid #1d5a35;padding:2px 0}
+.panel summary{cursor:pointer;color:#2fa859;font-size:18px;padding:8px 0;list-style:none}
+.panel summary::-webkit-details-marker{display:none}
+.panel summary::before{content:"+ "}
+.panel details[open] > summary::before{content:"- "}
+.panel details[open] > summary{color:#5dff8a}
 </style>
 </head>
 <body>
@@ -103,12 +109,29 @@ body.idle .panel{opacity:0;pointer-events:none}
   /* =====================================================
      SETTINGS
   ===================================================== */
-  const THEMES = {
-    green: { name:"Green phosphor", fg:"#5dff8a", dim:"#2a9a4e", bg:"#031208" },
-    amber: { name:"Amber",          fg:"#ffbb3d", dim:"#a06a14", bg:"#140b01" },
-    ice:   { name:"Ice blue",       fg:"#7ee8ff", dim:"#2a8097", bg:"#02121a" },
-    paper: { name:"White",          fg:"#eef3ea", dim:"#7b867b", bg:"#080a08" }
+  const COLORMODES = {
+    auto:  { name:"Auto from cover" },
+    white: { name:"White, black outline" },
+    black: { name:"Black, white outline" }
   };
+
+  function hexToRgb(h){ h = h.replace("#", ""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+  function rgbHex(r, g, b){ return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join(""); }
+  function mixHex(a, b, t){ const A = hexToRgb(a), B = hexToRgb(b); return rgbHex(A[0] + (B[0]-A[0])*t, A[1] + (B[1]-A[1])*t, A[2] + (B[2]-A[2])*t); }
+  function hslHex(h, sat, l){
+    h = ((h % 360) + 360) % 360; l = Math.max(0, Math.min(1, l));
+    const c = (1 - Math.abs(2*l - 1)) * sat, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return rgbHex((r + m) * 255, (g + m) * 255, (b + m) * 255);
+  }
+  function relLum(hex){
+    const v = hexToRgb(hex).map(n => { n /= 255; return n <= 0.03928 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4); });
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  }
+  function contrast(a, b){ const A = relLum(a), B = relLum(b); return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05); }
+
   const FONTS = {
     press: { name:"Press Start 2P (arcade)", css:'"Press Start 2P"', m:1,   lh:1.5 },
     silk:  { name:"Silkscreen (tiny pixel)", css:'"Silkscreen"',     m:1.3, lh:1.35 },
@@ -116,11 +139,6 @@ body.idle .panel{opacity:0;pointer-events:none}
     vt:    { name:"VT323 (terminal)",        css:'"VT323"',          m:2,   lh:1.0 },
     custom:{ name:"Your own font (see below)", css:'"NPCustom"',        m:1.6, lh:1.3 }
   };
-  const TOGGLES = [
-    ["scan","Scanlines"], ["glow","Glow"], ["curve","Curved glass"], ["mask","Phosphor dots"],
-    ["flicker","Flicker and static"], ["chroma","Colour fringe"], ["pixel","Pixelate album art"],
-    ["caps","Capital letters"], ["coverText","Text on cover layout"], ["centerText","Center text (full / cover)"], ["lite","Lite mode (slow PC)"]
-  ];
   const LAYOUTS = {
     left:   { name:"Left (art left)" },
     right:  { name:"Right (art right)" },
@@ -135,52 +153,286 @@ body.idle .panel{opacity:0;pointer-events:none}
     blur:    { name:"Blurred copy" },
     mirror:  { name:"Mirrored" }
   };
-  const defaults = { theme:"green", font:"press", layout:"left", customFont:"", sideFill:"tile", tileSize:48, tileGap:0, glowSpread:1.9, glowBlur:3, glowLayers:14, edgeBlend:40, sideDim:65, coverText:true, centerText:false, scan:true, glow:true, curve:true, mask:true, flicker:true, chroma:true, pixel:false, caps:true, lite:false };
+  const BARSTYLES = {
+    blocks:  { name:"Blocks (retro)" },
+    rounded: { name:"Rounded (smooth)" }
+  };
+  const defaults = { colorMode:"auto", font:"press", layout:"left", customFont:"", sideFill:"tile", tileSize:48, tileGap:0, glowSpread:1.9, glowBlur:3, glowLayers:14, edgeBlend:40, sideDim:65, coverText:true, textFade:true, showBar:true, showTimes:true, barStyle:"blocks", fontScale:100, outlineWidth:2, centerText:false, scan:true, glow:true, curve:true, mask:true, flicker:true, chroma:true, pixel:false, caps:true, lite:false };
   let settings = Object.assign({}, defaults);
   try { Object.assign(settings, JSON.parse(store.get("np_settings") || "{}")); } catch(e){}
-  if (!THEMES[settings.theme]) settings.theme = "green";
+  if (!COLORMODES[settings.colorMode]) settings.colorMode = "auto";
   if (!FONTS[settings.font]) settings.font = "press";
   if (!LAYOUTS[settings.layout]) settings.layout = "left";
   if (settings.font === "custom" && !settings.customFont) settings.font = "press";
   if (!SIDEFILLS[settings.sideFill]) settings.sideFill = "tile";
+  if (!BARSTYLES[settings.barStyle]) settings.barStyle = "blocks";
 
   let sceneDirty = true;
 
   function saveSettings(){ store.set("np_settings", JSON.stringify(settings)); sceneDirty = true; }
 
+  const panelOpen = { layout:true, options:true, font:false, bar:false, filters:false, presets:false, account:false };
+
   function buildPanel(){
     const p = $("#panel");
+    const keep = p.scrollTop;
     p.innerHTML = "<h2>&gt; SETTINGS</h2>";
-    const mkSelect = (label, key, opts) => {
-      const l = document.createElement("label"); l.append(label);
-      const s = document.createElement("select");
-      Object.keys(opts).forEach(k => { const o = document.createElement("option"); o.value = k; o.textContent = opts[k].name; s.append(o); });
-      s.value = settings[key];
-      s.addEventListener("change", () => { settings[key] = s.value; saveSettings(); });
-      l.append(s); p.append(l);
+    const sides = settings.layout === "sides", full = settings.layout === "full";
+
+    const section = (key, title) => {
+      const d = document.createElement("details");
+      d.open = !!panelOpen[key];
+      d.addEventListener("toggle", () => { panelOpen[key] = d.open; });
+      const sm = document.createElement("summary"); sm.textContent = title;
+      d.append(sm); p.append(d);
+      return d;
     };
-    mkSelect("Text colour", "theme", THEMES);
-    mkSelect("Font", "font", FONTS);
-    mkSelect("Layout", "layout", LAYOUTS);
-    mkSelect("Side fill", "sideFill", SIDEFILLS);
-    const mkSlider = (label, key, min, max, step) => {
+    const selectRaw = (box, label, names, value, onChange) => {
+      const l = document.createElement("label"); l.append(label);
+      const sel = document.createElement("select");
+      Object.keys(names).forEach(k => { const o = document.createElement("option"); o.value = k; o.textContent = names[k]; sel.append(o); });
+      sel.value = value;
+      sel.addEventListener("change", () => onChange(sel.value));
+      l.append(sel); box.append(l);
+    };
+    const select = (box, label, key, opts) => {
+      const names = {}; Object.keys(opts).forEach(k => { names[k] = opts[k].name; });
+      selectRaw(box, label, names, settings[key], (v) => { settings[key] = v; saveSettings(); buildPanel(); });
+    };
+    const toggle = (box, label, key) => {
+      const l = document.createElement("label"); l.append(label);
+      const c = document.createElement("input"); c.type = "checkbox"; c.checked = !!settings[key];
+      c.addEventListener("change", () => { settings[key] = c.checked; saveSettings(); if (key === "lite") resize(); buildPanel(); });
+      l.append(c); box.append(l);
+    };
+    const slider = (box, label, key, min, max, step, unit) => {
       const l = document.createElement("label");
-      const t = document.createElement("span"); t.textContent = label + " " + settings[key];
+      const t = document.createElement("span"); t.textContent = label + " " + settings[key] + (unit || "");
       const r = document.createElement("input");
       r.type = "range"; r.min = min; r.max = max; r.step = step; r.value = settings[key];
       r.style.cssText = "width:120px;accent-color:#5dff8a";
-      r.addEventListener("input", () => { settings[key] = Number(r.value); t.textContent = label + " " + r.value; saveSettings(); });
-      l.append(t, r); p.append(l);
+      r.addEventListener("input", () => { settings[key] = Number(r.value); t.textContent = label + " " + r.value + (unit || ""); saveSettings(); });
+      l.append(t, r); box.append(l);
     };
-    mkSlider("Tile size", "tileSize", 16, 160, 2);
-    mkSlider("Tile gap", "tileGap", 0, 40, 1);
-    mkSlider("Glow spread", "glowSpread", 1.2, 3, 0.1);
-    mkSlider("Glow blur", "glowBlur", 1, 6, 1);
-    mkSlider("Glow layers", "glowLayers", 3, 30, 1);
-    mkSlider("Side darkness", "sideDim", 0, 90, 5);
-    mkSlider("Edge blend", "edgeBlend", 0, 90, 2);
+    const note = (box, text) => {
+      const d = document.createElement("div");
+      d.style.cssText = "color:#2fa859;font-size:14px;padding:4px 0"; d.textContent = text; box.append(d);
+    };
+
+    // 1. Layout
+    select(section("layout", "Layout"), "Layout", "layout", LAYOUTS);
+
+    // 2. Layout options (only what applies to the chosen layout)
+    const o = section("options", "Layout options");
+    if (sides) {
+      select(o, "Side fill", "sideFill", SIDEFILLS);
+      if (settings.sideFill === "tile") {
+        slider(o, "Tile size", "tileSize", 16, 160, 2, "px");
+        slider(o, "Tile gap", "tileGap", 0, 40, 1, "px");
+      }
+      if (settings.sideFill === "ambient") {
+        slider(o, "Glow spread", "glowSpread", 1.2, 3, 0.1, "x");
+        slider(o, "Glow blur", "glowBlur", 1, 6, 1);
+        slider(o, "Glow layers", "glowLayers", 3, 30, 1);
+      }
+      slider(o, "Side darkness", "sideDim", 0, 90, 5, "%");
+      slider(o, "Edge blend", "edgeBlend", 0, 90, 2, "px");
+      toggle(o, "Text on cover", "coverText");
+    }
+    if (sides || full) {
+      toggle(o, "Dark fade behind text", "textFade");
+      selectRaw(o, "Text alignment", { left:"Left", center:"Centered" }, settings.centerText ? "center" : "left",
+        (v) => { settings.centerText = (v === "center"); saveSettings(); });
+    }
+    toggle(o, "Pixelate album art", "pixel");
+    if (!sides && !full) note(o, "More options appear for the cover and full screen layouts.");
+
+    // 3. Font
+    const fo = section("font", "Font");
+    select(fo, "Font", "font", FONTS);
+    addCustomFont(fo);
+    slider(fo, "Text size", "fontScale", 50, 160, 5, "%");
+    toggle(fo, "Capital letters", "caps");
+    select(fo, "Text colour", "colorMode", COLORMODES);
+    slider(fo, "Outline thickness", "outlineWidth", 0, 4, 1, "px");
+
+    // 4. Progress bar
+    const bo = section("bar", "Progress bar");
+    toggle(bo, "Show progress bar", "showBar");
+    if (settings.showBar) select(bo, "Bar style", "barStyle", BARSTYLES);
+    toggle(bo, "Show time stamps", "showTimes");
+
+    // 5. Filters
+    const fl = section("filters", "Filters");
+    [["scan","Scanlines"], ["glow","Glow"], ["curve","Curved glass"], ["mask","Phosphor dots"],
+     ["flicker","Flicker and static"], ["chroma","Colour fringe"], ["lite","Lite mode (slow PC)"]]
+      .forEach(([k, label]) => toggle(fl, label, k));
+
+    // 6. Presets
+    buildPresets(section("presets", "Presets"));
+
+    // 7. Account
+    const ac = section("account", "Account");
+    const b = document.createElement("button");
+    b.className = "btn ghost"; b.textContent = "Change Client ID / log out"; b.style.marginTop = "4px";
+    b.addEventListener("click", () => {
+      ["np_cid","np_verifier","np_access","np_expires","np_refresh"].forEach(store.del);
+      location.reload();
+    });
+    ac.append(b);
+
+    p.scrollTop = keep;
+  }
+
+  // ---- presets: save, load, export, import ----
+  const PRESET_KEY = "np_presets";
+  let presetNote = "";
+  const RANGES = { tileSize:[16,160], tileGap:[0,40], glowSpread:[1.2,3], glowBlur:[1,6], glowLayers:[3,30], edgeBlend:[0,90], sideDim:[0,90], fontScale:[50,160], outlineWidth:[0,4] };
+
+  function loadPresets(){
+    try { const o = JSON.parse(store.get(PRESET_KEY) || "{}"); return (o && typeof o === "object") ? o : {}; }
+    catch(e) { return {}; }
+  }
+  function storePresets(o){ store.set(PRESET_KEY, JSON.stringify(o)); }
+
+  // keep only known settings with sensible values (so a pasted preset can never break the page)
+  function cleanSettings(raw){
+    const out = {};
+    if (!raw || typeof raw !== "object") return out;
+    const enums = { layout:LAYOUTS, font:FONTS, sideFill:SIDEFILLS, barStyle:BARSTYLES, colorMode:COLORMODES };
+    Object.keys(defaults).forEach(k => {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) return;
+      const v = raw[k], d = defaults[k];
+      if (typeof d === "boolean") { if (typeof v === "boolean") out[k] = v; }
+      else if (typeof d === "number") {
+        const n = Number(v);
+        if (isFinite(n)) out[k] = RANGES[k] ? Math.max(RANGES[k][0], Math.min(RANGES[k][1], n)) : n;
+      } else if (typeof d === "string") {
+        if (typeof v === "string") {
+          const t = v.slice(0, 120);
+          if (enums[k] && !enums[k][t]) return;
+          out[k] = t;
+        }
+      }
+    });
+    return out;
+  }
+  function applyPreset(raw, okMsg){
+    const clean = cleanSettings(raw);
+    if (!Object.keys(clean).length) return false;
+    settings = Object.assign({}, defaults, clean);
+    if (settings.font === "custom" && !settings.customFont) settings.font = "press";
+    presetNote = okMsg || "Preset applied.";
+    saveSettings();
+    if (settings.customFont) applyCustomFont(settings.customFont, false);
+    resize(); buildPanel();
+    return true;
+  }
+  function presetPayload(name, snap){
+    return JSON.stringify({ app:"now-playing-display", version:1, name:name, settings:snap }, null, 2);
+  }
+  function presetFileName(name){
+    return (String(name).replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "preset") + ".json";
+  }
+  function downloadText(filename, text){
+    const url = URL.createObjectURL(new Blob([text], { type:"application/json" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  // returns an error message, or "" when the preset was applied
+  function importText(text){
+    let obj;
+    try { obj = JSON.parse(text); } catch(e) { return "That is not a valid preset. Paste the whole text, starting with {"; }
+    const raw = (obj && obj.settings && typeof obj.settings === "object") ? obj.settings : obj;
+    if (!applyPreset(raw, "Preset imported.")) return "No usable settings found in that preset.";
+    return "";
+  }
+
+  function buildPresets(box){
+    const presets = loadPresets(), names = Object.keys(presets);
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin:8px 0 2px;font-size:14px;color:#5dff8a;min-height:1em";
+    msg.textContent = presetNote;
+    const say = (t) => { presetNote = t; msg.textContent = t; };
+    const hint = (t) => {
+      const d = document.createElement("div");
+      d.style.cssText = "color:#2fa859;font-size:14px;margin:8px 0 4px"; d.textContent = t; box.append(d);
+    };
+    const btn = (label, fn) => {
+      const b = document.createElement("button");
+      b.className = "btn ghost"; b.style.cssText = "margin:0;font-size:14px;padding:6px 10px";
+      b.textContent = label; b.addEventListener("click", fn); return b;
+    };
+    const row = () => {
+      const d = document.createElement("div");
+      d.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin:4px 0"; box.append(d); return d;
+    };
+
+    // save the current look
+    hint("Save the current look");
+    const nameIn = document.createElement("input");
+    nameIn.className = "field"; nameIn.placeholder = "Preset name";
+    nameIn.style.cssText = "margin:0 0 6px;padding:6px 8px";
+    nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") saveBtn.click(); });
+    box.append(nameIn);
+    const saveBtn = btn("Save current", () => {
+      const n = nameIn.value.trim().slice(0, 40);
+      if (!n) { say("Type a name first."); return; }
+      const all = loadPresets(); all[n] = cleanSettings(settings); storePresets(all);
+      presetNote = "Saved \u201C" + n + "\u201D."; buildPanel();
+    });
+    row().append(saveBtn);
+
+    // saved presets
+    if (names.length) {
+      hint("Saved presets");
+      const sel = document.createElement("select"); sel.style.maxWidth = "100%";
+      names.forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; sel.append(o); });
+      box.append(sel);
+      row().append(
+        btn("Load", () => { applyPreset(presets[sel.value], "Loaded \u201C" + sel.value + "\u201D."); }),
+        btn("Export", () => { downloadText(presetFileName(sel.value), presetPayload(sel.value, presets[sel.value])); say("Exported."); }),
+        btn("Delete", () => { const all = loadPresets(); delete all[sel.value]; storePresets(all); presetNote = "Deleted."; buildPanel(); })
+      );
+    } else {
+      hint("No saved presets yet.");
+    }
+
+    // share / back up / import
+    hint("Share or back up");
+    const ta = document.createElement("textarea");
+    ta.className = "field"; ta.rows = 3; ta.placeholder = "Or paste preset text here";
+    ta.style.cssText = "margin:6px 0;padding:6px 8px;font-size:12px;resize:vertical";
+    const fileIn = document.createElement("input");
+    fileIn.type = "file"; fileIn.accept = ".json,application/json,text/plain"; fileIn.style.display = "none";
+    fileIn.addEventListener("change", () => {
+      const f = fileIn.files && fileIn.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => { const e = importText(String(rd.result)); if (e) say(e); };
+      rd.onerror = () => say("Could not read that file.");
+      rd.readAsText(f); fileIn.value = "";
+    });
+    row().append(
+      btn("Export current (file)", () => { downloadText("now-playing-preset.json", presetPayload("current", cleanSettings(settings))); say("Exported."); }),
+      btn("Copy as text", () => {
+        const text = presetPayload("current", cleanSettings(settings));
+        const manual = () => { ta.value = text; say("Copy was blocked. The text is in the box below, copy it by hand."); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => say("Copied. Paste it anywhere to share."), manual);
+        else manual();
+      }),
+      btn("Import from file", () => fileIn.click()),
+      fileIn
+    );
+    box.append(ta);
+    row().append(btn("Import pasted text", () => { const e = importText(ta.value); if (e) say(e); }));
+    box.append(msg);
+  }
+
+  function addCustomFont(box){
     const cf = document.createElement("div");
-    cf.style.cssText = "padding:8px 0 4px;border-top:1px solid #2fa859;margin-top:6px";
+    cf.style.cssText = "padding:6px 0 4px";
     const hint = document.createElement("div");
     hint.style.cssText = "color:#2fa859;margin-bottom:6px;font-size:14px";
     hint.textContent = "Your own font: a Google Fonts name, or a font file from your repository (like myfont.ttf)";
@@ -189,25 +441,13 @@ body.idle .panel{opacity:0;pointer-events:none}
     inp.placeholder = "e.g. Jersey 10"; inp.value = settings.customFont || "";
     const go = document.createElement("button");
     go.className = "btn ghost"; go.textContent = "Use this font"; go.style.marginTop = "0";
-    const note = document.createElement("div");
-    note.id = "fontNote"; note.style.cssText = "margin-top:6px;font-size:14px";
+    const nt = document.createElement("div");
+    nt.id = "fontNote"; nt.style.cssText = "margin-top:6px;font-size:14px";
     go.addEventListener("click", () => applyCustomFont(inp.value));
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") applyCustomFont(inp.value); });
-    cf.append(hint, inp, go, note); p.append(cf);
-    TOGGLES.forEach(([k, label]) => {
-      const l = document.createElement("label"); l.append(label);
-      const c = document.createElement("input"); c.type = "checkbox"; c.checked = !!settings[k];
-      c.addEventListener("change", () => { settings[k] = c.checked; saveSettings(); if (k === "lite") resize(); });
-      l.append(c); p.append(l);
-    });
-    const b = document.createElement("button");
-    b.className = "btn ghost"; b.textContent = "Change Client ID / log out";
-    b.addEventListener("click", () => {
-      ["np_cid","np_verifier","np_access","np_expires","np_refresh"].forEach(store.del);
-      location.reload();
-    });
-    p.append(b);
+    cf.append(hint, inp, go, nt); box.append(cf);
   }
+
   buildPanel();
 
   function fontNote(t){ const n = document.getElementById("fontNote"); if (n) n.textContent = t; }
@@ -377,6 +617,91 @@ body.idle .panel{opacity:0;pointer-events:none}
   /* =====================================================
      THE SCENE (drawn at 640 x 480, like a real 4:3 TV)
   ===================================================== */
+  // ---- text colour pair (text + outline chosen together) ----
+  let statsKey = "", statsVal = null;
+  function artStats(){
+    if (!artImg) return null;
+    if (statsKey !== artUrl) {
+      statsKey = artUrl; statsVal = null;
+      try {
+        const N = 24, c = document.createElement("canvas"); c.width = c.height = N;
+        const x = c.getContext("2d"); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+        const S = artImg.naturalWidth || artImg.width || 1;
+        x.drawImage(artImg, 0, 0, S, S, 0, 0, N, N);
+        const d = x.getImageData(0, 0, N, N).data;
+        const hues = [], ws = [], hist = new Array(36).fill(0);
+        let strip = 0, sn = 0;
+        for (let py = 0; py < N; py++) for (let px = 0; px < N; px++) {
+          const i = (py * N + px) * 4, r = d[i], g = d[i+1], b = d[i+2];
+          const mx = Math.max(r, g, b), mn = Math.min(r, g, b), v = mx / 255, sat = mx ? (mx - mn) / mx : 0;
+          if (py >= N * 0.62) { strip += (0.2126*r + 0.7152*g + 0.0722*b) / 255; sn++; }
+          if (v < 0.18 || sat < 0.22) continue;       // ignore near-black, near-white and grey pixels
+          const dd = mx - mn; let h;
+          if (mx === r) h = ((g - b) / dd) % 6; else if (mx === g) h = (b - r) / dd + 2; else h = (r - g) / dd + 4;
+          h *= 60; if (h < 0) h += 360;
+          const w = sat * (0.35 + v);
+          hues.push(h); ws.push(w); hist[Math.floor(h / 10) % 36] += w;
+        }
+        let hue = null;
+        if (hues.length >= N * N * 0.04) {
+          let best = 0, bestV = -1;
+          for (let k = 0; k < 36; k++) {
+            const sc3 = hist[k] * 2 + hist[(k + 35) % 36] + hist[(k + 1) % 36];
+            if (sc3 > bestV) { bestV = sc3; best = k; }
+          }
+          let sx = 0, sy = 0;
+          hues.forEach((h, j) => {
+            const k = Math.floor(h / 10) % 36, dk = Math.min(Math.abs(k - best), 36 - Math.abs(k - best));
+            if (dk <= 1) { sx += Math.cos(h * Math.PI / 180) * ws[j]; sy += Math.sin(h * Math.PI / 180) * ws[j]; }
+          });
+          hue = (Math.atan2(sy, sx) * 180 / Math.PI + 360) % 360;
+        }
+        statsVal = { hue: hue, stripLum: sn ? strip / sn : 0 };
+      } catch(e) { statsVal = null; }
+    }
+    return statsVal;
+  }
+
+  function buildPair(light, hue){
+    let fg, oc;
+    if (hue === null) {
+      fg = light ? "#f4efe6" : "#141414";
+      oc = light ? "#0b0b0b" : "#f4efe6";
+    } else {
+      let fl = light ? 0.88 : 0.09, ol = light ? 0.12 : 0.90;
+      const mk = () => { fg = hslHex(hue, light ? 0.8 : 0.6, fl); oc = hslHex(hue, light ? 0.65 : 0.55, ol); };
+      mk();
+      for (let i = 0; i < 12 && contrast(fg, oc) < 7; i++) {
+        fl += light ? 0.01 : -0.01; ol += light ? -0.01 : 0.01; mk();
+      }
+    }
+    const bg = light ? (hue === null ? "#0a0a0a" : hslHex(hue, 0.35, 0.06)) : "#ece7dd";
+    return { fg: fg, dim: mixHex(fg, oc, 0.35), bg: bg, outline: oc };
+  }
+
+  let pairKey = "", pairVal = null, curOutline = "#0b0b0b";
+  function curTheme(){
+    const lay = settings.layout;
+    const overArt = (lay === "sides" || lay === "full") && !!artImg && !!st.title;
+    const key = [settings.colorMode, artUrl, artImg ? 1 : 0, overArt ? 1 : 0, settings.textFade ? 1 : 0].join("|");
+    if (key !== pairKey) {
+      pairKey = key;
+      const mode = settings.colorMode;
+      let light = true, hue = null;
+      if (mode === "black") light = false;
+      else if (mode === "auto") {
+        const stt = artStats();
+        if (stt) {
+          hue = stt.hue;
+          if (overArt) { const back = settings.textFade ? stt.stripLum * 0.25 : stt.stripLum; light = back < 0.5; }
+        }
+      }
+      pairVal = buildPair(light, hue);
+    }
+    curOutline = pairVal.outline;
+    return pairVal;
+  }
+
   const W = 640, H = 480;
   const scene = document.createElement("canvas"); scene.width = W; scene.height = H;
   const sc = scene.getContext("2d");
@@ -456,8 +781,34 @@ body.idle .panel{opacity:0;pointer-events:none}
     sc.strokeStyle = th.dim; sc.lineWidth = 2; sc.strokeRect(x - 3, y - 3, w + 6, h + 6);
   }
 
+  function drawTxt(txt, x, y){
+    const wv = Number(settings.outlineWidth);
+    const ow = isNaN(wv) ? 2 : wv;
+    if (ow > 0) {
+      const px = parseFloat(sc.font) || 16;
+      sc.save();
+      sc.lineJoin = "round"; sc.miterLimit = 2;
+      sc.lineWidth = Math.max(1, ow * px / 16) * 2;
+      sc.strokeStyle = curOutline;
+      sc.strokeText(txt, x, y);
+      sc.restore();
+    }
+    sc.fillText(txt, x, y);
+  }
+
+  // stack the bar and times up from the bottom edge, so text drops down when they are off
+  function bottomStack(barH, f){
+    const th = Math.round(11 * f.m * fscale());
+    let yy = 450, timesY = null, barY = null;
+    if (settings.showTimes) { timesY = yy - th; yy = timesY - 8; }
+    if (settings.showBar) { barY = yy - barH; yy = barY - 14; }
+    return { timesY: timesY, barY: barY, textBottom: yy - 2 };
+  }
+
+  function fscale(){ return Math.max(0.5, Math.min(1.6, (Number(settings.fontScale) || 100) / 100)); }
+
   function textBlock(x, y, w, align, o, th, f, idle, bottom){
-    const sz = (arr) => arr.map(n => Math.round(n * f.m));
+    const sz = (arr) => arr.map(n => Math.round(n * f.m * fscale()));
     const t = fit(o.title, sz(o.tSizes), f, w, o.tLines);
     const a = fit(o.artist, sz(o.aSizes), f, w, o.aLines);
     let b = o.album ? fit(o.album, sz(o.bSizes), f, w, o.bLines || 2) : null;
@@ -471,39 +822,61 @@ body.idle .panel{opacity:0;pointer-events:none}
     const ox = align === "center" ? x + w / 2 : x;
     sc.textAlign = align;
     sc.font = t.size + "px " + f.css + ", monospace"; sc.fillStyle = th.fg;
-    t.lines.forEach(l => { sc.fillText(l, ox, yy); yy += Math.round(t.size * f.lh); });
+    t.lines.forEach(l => { drawTxt(l, ox, yy); yy += Math.round(t.size * f.lh); });
     yy += 12;
     sc.font = a.size + "px " + f.css + ", monospace"; sc.fillStyle = idle ? th.dim : th.fg;
-    a.lines.forEach(l => { sc.fillText(l, ox, yy); yy += Math.round(a.size * f.lh); });
+    a.lines.forEach(l => { drawTxt(l, ox, yy); yy += Math.round(a.size * f.lh); });
     if (b) {
       yy += 10;
       sc.font = b.size + "px " + f.css + ", monospace"; sc.fillStyle = th.dim;
-      b.lines.forEach(l => { sc.fillText(l, ox, yy); yy += Math.round(b.size * f.lh); });
+      b.lines.forEach(l => { drawTxt(l, ox, yy); yy += Math.round(b.size * f.lh); });
     }
     sc.textAlign = "left";
     return yy;
   }
 
+  function rrect(c, x, y, w, h, r){
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    c.beginPath(); c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
   function drawBar(x, y, w, h, frac, th){
+    if (!settings.showBar) return;
+    const owb = Number(settings.outlineWidth) || 0;
+    if (settings.barStyle === "rounded") {
+      if (owb > 0) { sc.strokeStyle = curOutline; sc.lineWidth = 2 + 2 * Math.min(owb, 3); rrect(sc, x + 1, y + 1, w - 2, h - 2, (h - 2) / 2); sc.stroke(); }
+      sc.strokeStyle = th.dim; sc.lineWidth = 2;
+      rrect(sc, x + 1, y + 1, w - 2, h - 2, (h - 2) / 2); sc.stroke();
+      const ih = h - 8, fw = (w - 8) * frac;
+      if (frac > 0) {
+        sc.fillStyle = th.fg;
+        rrect(sc, x + 4, y + 4, Math.max(ih, fw), ih, ih / 2); sc.fill();
+      }
+      return;
+    }
+    if (owb > 0) { sc.strokeStyle = curOutline; sc.lineWidth = 2 + 2 * Math.min(owb, 3); sc.strokeRect(x + 1, y + 1, w - 2, h - 2); }
     sc.strokeStyle = th.dim; sc.lineWidth = 2; sc.strokeRect(x + 1, y + 1, w - 2, h - 2);
     const pitch = 11, blocks = Math.floor((w - 10) / pitch), on = Math.round(blocks * frac);
     sc.fillStyle = th.fg;
     for (let i = 0; i < on; i++) sc.fillRect(x + 5 + i*pitch, y + 5, 8, h - 10);
   }
   function drawTimes(x, y, w, centered, cur, th, f){
-    sc.font = Math.round(11*f.m) + "px " + f.css + ", monospace"; sc.fillStyle = th.fg;
+    if (!settings.showTimes) return;
+    sc.font = Math.round(11*f.m*fscale()) + "px " + f.css + ", monospace"; sc.fillStyle = th.fg;
     if (centered) {
-      sc.textAlign = "center"; sc.fillText(fmt(cur) + " / " + fmt(st.duration), x + w/2, y);
+      sc.textAlign = "center"; drawTxt(fmt(cur) + " / " + fmt(st.duration), x + w/2, y);
     } else {
-      sc.textAlign = "left";  sc.fillText(fmt(cur), x, y);
-      sc.textAlign = "right"; sc.fillText(fmt(st.duration), x + w, y);
+      sc.textAlign = "left";  drawTxt(fmt(cur), x, y);
+      sc.textAlign = "right"; drawTxt(fmt(st.duration), x + w, y);
     }
     sc.textAlign = "left";
   }
   function drawHeader(x, y, align, color, f, text){
     sc.textAlign = align; sc.fillStyle = color;
-    sc.font = Math.round(11*f.m) + "px " + f.css + ", monospace";
-    sc.fillText(text, x, y); sc.textAlign = "left";
+    sc.font = Math.round(11*f.m*fscale()) + "px " + f.css + ", monospace";
+    drawTxt(text, x, y); sc.textAlign = "left";
   }
 
   const blurA = document.createElement("canvas"); blurA.width = 24; blurA.height = 18;
@@ -572,7 +945,7 @@ body.idle .panel{opacity:0;pointer-events:none}
     } else if (mode === "tile") {
       const T = Math.max(8, Math.round(settings.tileSize)), G = Math.max(0, Math.round(settings.tileGap)), P = T + G;
       const tile = getTile(T, S);
-      sc.fillStyle = THEMES[settings.theme].bg;
+      sc.fillStyle = curTheme().bg;
       sc.fillRect(0, 0, L, H); sc.fillRect(R, 0, L, H);
       sc.save(); sc.beginPath(); sc.rect(0, 0, L, H); sc.rect(R, 0, L, H); sc.clip();
       const y0 = H / 2 - T / 2;
@@ -596,7 +969,7 @@ body.idle .panel{opacity:0;pointer-events:none}
       const spread = Math.max(1.2, Math.min(3, Number(settings.glowSpread) || 1.9));
       const bl = Math.max(1, Math.min(6, Number(settings.glowBlur) || 3));
       const n = Math.max(3, Math.min(30, Math.round(Number(settings.glowLayers) || 14)));
-      sc.fillStyle = THEMES[settings.theme].bg; sc.fillRect(0, 0, W, H);
+      sc.fillStyle = curTheme().bg; sc.fillRect(0, 0, W, H);
       for (let k = 0; k < n; k++) {
         const t = k / (n - 1);
         const size = 480 * (spread + (1.0 - spread) * t);
@@ -649,7 +1022,7 @@ body.idle .panel{opacity:0;pointer-events:none}
   }
 
   function drawScene(){
-    const th = THEMES[settings.theme], f = FONTS[settings.font], layout = settings.layout;
+    const th = curTheme(), f = FONTS[settings.font], layout = settings.layout;
     const U = (s) => settings.caps ? String(s).toUpperCase() : String(s);
     const idle = !st.title;
     sc.textAlign = "left"; sc.textBaseline = "top"; sc.shadowBlur = 0; sc.shadowColor = "transparent";
@@ -675,13 +1048,15 @@ body.idle .panel{opacity:0;pointer-events:none}
       Object.assign(o, { tLines:4, tSizes:[24,20,16,14,12], aLines:2, aSizes:[14,12,10], bLines:2, bSizes:[11,9,8] });
       textBlock(txtX, 76, 280, "left", o, th, f, idle);
       drawBar(40, 366, 560, 24, frac, th);
-      drawTimes(40, 404, 560, false, cur, th, f);
+      drawTimes(40, settings.showBar ? 404 : 372, 560, false, cur, th, f);
 
     } else if (layout === "center") {
       drawHeader(320, 34, "center", th.dim, f, hdrText);
-      drawArt(225, 62, 190, 190, idle); artFrame(225, 62, 190, 190, th);
-      Object.assign(o, { tLines:2, tSizes:[22,18,15,12], aLines:1, aSizes:[14,12,10], bLines:1, bSizes:[10,8], maxY:396 });
-      textBlock(60, 272, 520, "center", o, th, f, idle);
+      const dy = Math.round(((settings.showBar ? 0 : 34) + (settings.showTimes ? 0 : 22)) / 2);
+      const maxY = settings.showBar ? 396 : (settings.showTimes ? 430 : 452);
+      drawArt(225, 62 + dy, 190, 190, idle); artFrame(225, 62 + dy, 190, 190, th);
+      Object.assign(o, { tLines:2, tSizes:[22,18,15,12], aLines:1, aSizes:[14,12,10], bLines:1, bSizes:[10,8], maxY:maxY });
+      textBlock(60, 272 + dy, 520, "center", o, th, f, idle);
       drawBar(60, 406, 520, 20, frac, th);
       drawTimes(60, 436, 520, true, cur, th, f);
 
@@ -689,7 +1064,7 @@ body.idle .panel{opacity:0;pointer-events:none}
       if (idle) drawHeader(320, 22, "center", th.dim, f, hdrText);
       drawArt(155, 48, 330, 330, idle); artFrame(155, 48, 330, 330, th);
       drawBar(155, 398, 330, 20, frac, th);
-      drawTimes(155, 428, 330, false, cur, th, f);
+      drawTimes(155, settings.showBar ? 428 : 400, 330, false, cur, th, f);
 
     } else if (layout === "sides") {
       drawSideFill(settings.sideFill, idle);
@@ -697,20 +1072,24 @@ body.idle .panel{opacity:0;pointer-events:none}
         const F = Math.max(0, Math.min(90, Number(settings.edgeBlend) || 0));
         if (F > 0 && artImg) drawFeatheredCover(F); else drawArt(80, 0, 480, 480, false);
       }
-      if (settings.coverText || idle) {
+      const showText = settings.coverText || idle;
+      if (settings.textFade) {
         let g = sc.createLinearGradient(0, 230, 0, H);
         g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(0.5, "rgba(0,0,0,0.6)"); g.addColorStop(1, "rgba(0,0,0,0.92)");
         sc.fillStyle = g; sc.fillRect(0, 230, W, H - 230);
         g = sc.createLinearGradient(0, 0, 0, 80);
         g.addColorStop(0, "rgba(0,0,0,0.55)"); g.addColorStop(1, "rgba(0,0,0,0)");
         sc.fillStyle = g; sc.fillRect(0, 0, W, 80);
-        sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
+      }
+      sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
+      if (showText) {
         const ctr = !!settings.centerText;
         drawHeader(ctr ? 320 : 104, 34, ctr ? "center" : "left", th.fg, f, hdrText);
         Object.assign(o, { tLines:2, tSizes:[20,16,14,12], aLines:1, aSizes:[12,10], bLines:1, bSizes:[9,8] });
-        textBlock(104, 0, 432, ctr ? "center" : "left", o, th, f, idle, 392);
-        drawBar(104, 408, 432, 20, frac, th);
-        drawTimes(104, 436, 432, ctr, cur, th, f);
+        const bs = bottomStack(20, f);
+        textBlock(104, 0, 432, ctr ? "center" : "left", o, th, f, idle, bs.textBottom);
+        if (bs.barY !== null) drawBar(104, bs.barY, 432, 20, frac, th);
+        if (bs.timesY !== null) drawTimes(104, bs.timesY, 432, ctr, cur, th, f);
       } else {
         sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
         drawBar(104, 440, 432, 16, frac, th);
@@ -719,19 +1098,22 @@ body.idle .panel{opacity:0;pointer-events:none}
 
     } else { // full screen art
       drawArt(0, 0, W, H, idle);
+      if (settings.textFade) {
       let g = sc.createLinearGradient(0, 150, 0, H);
       g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(0.55, "rgba(0,0,0,0.6)"); g.addColorStop(1, "rgba(0,0,0,0.92)");
       sc.fillStyle = g; sc.fillRect(0, 150, W, H - 150);
       g = sc.createLinearGradient(0, 0, 0, 90);
       g.addColorStop(0, "rgba(0,0,0,0.55)"); g.addColorStop(1, "rgba(0,0,0,0)");
       sc.fillStyle = g; sc.fillRect(0, 0, W, 90);
+      }
       sc.shadowColor = "rgba(0,0,0,0.9)"; sc.shadowBlur = 8;
       const ctr = !!settings.centerText;
       drawHeader(ctr ? 320 : 44, 36, ctr ? "center" : "left", th.fg, f, hdrText);
       Object.assign(o, { tLines:2, tSizes:[22,18,15,12], aLines:1, aSizes:[14,12,10], bLines:1, bSizes:[10,8] });
-      textBlock(44, 0, 552, ctr ? "center" : "left", o, th, f, false, 392);
-      drawBar(44, 408, 552, 20, frac, th);
-      drawTimes(44, 436, 552, ctr, cur, th, f);
+      const bs = bottomStack(20, f);
+      textBlock(44, 0, 552, ctr ? "center" : "left", o, th, f, false, bs.textBottom);
+      if (bs.barY !== null) drawBar(44, bs.barY, 552, 20, frac, th);
+      if (bs.timesY !== null) drawTimes(44, bs.timesY, 552, ctr, cur, th, f);
       sc.shadowBlur = 0; sc.shadowColor = "transparent";
     }
   }
